@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Entrypoint for render-engine on Render Container
+# Fork: upstream mesh -> Headscale/Tailscale (userspace), upstream telemetry -> Nezha v1 agent
 # Modular Architecture: Minimal Zero-Config Base with On-Demand Extension
 # Production-Hardened Edition
 # ==============================================================================
@@ -83,62 +84,27 @@ chsh -s /bin/bash root >/dev/null 2>&1 || true
 # 2. On-Demand Feature Flags & Arguments Preparation
 # ------------------------------------------------------------------------------
 
-# Feature 1: EasyTier User-Space Mesh Network
-# Explicit credentials or flag take precedence
-if [ -n "${ET_NAME:-}" ] || [ -n "${ET_PEERS:-}" ] || [ "${ENABLE_EASYTIER:-}" = "true" ]; then
-    ENABLE_EASYTIER="true"
+# Feature 1: Tailscale mesh via self-hosted Headscale
+# Render containers have no /dev/net/tun and no CAP_NET_ADMIN, so
+# tailscaled runs in userspace-networking mode (gVisor netstack):
+# the node still gets a tailnet IP, is visible in Headscale, and
+# `tailscale serve` can forward tailnet TCP to the local sshd.
+# Requires HEADSCALE_URL + TS_AUTHKEY (a reusable Headscale preauth key).
+if [ -n "${HEADSCALE_URL:-}" ] || [ -n "${TS_AUTHKEY:-}" ] || [ "${ENABLE_TAILSCALE:-}" = "true" ]; then
+    ENABLE_TAILSCALE="true"
 else
-    ENABLE_EASYTIER="false"
+    ENABLE_TAILSCALE="false"
 fi
 
-ET_ARGS=()
-if [ "$ENABLE_EASYTIER" = "true" ]; then
-    log "EasyTier mesh network is ENABLED. Preparing arguments..."
-    ET_NAME="${ET_NAME:-render-mesh}"
-    ET_SECRET="${ET_SECRET:-render-mesh-secret}"
-    ET_ARGS+=(--network-name "$ET_NAME")
-    ET_ARGS+=(--network-secret "$ET_SECRET")
-
-    # IP configuration
-    if [ -n "${ET_IP:-}" ]; then
-        ET_ARGS+=(-i "$ET_IP")
-        log "EasyTier static IP: $ET_IP"
-    elif [ "${ET_DHCP:-false}" = "true" ]; then
-        ET_ARGS+=(-d)
-        log "EasyTier DHCP mode enabled."
+if [ "$ENABLE_TAILSCALE" = "true" ]; then
+    if [ -z "${HEADSCALE_URL:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
+        warn "ENABLE_TAILSCALE requested but HEADSCALE_URL or TS_AUTHKEY is missing; skipping Tailscale."
+        ENABLE_TAILSCALE="false"
     else
-        DEFAULT_IP="10.144.144.90"
-        ET_ARGS+=(-i "$DEFAULT_IP")
-        log "EasyTier IP not set; using default: $DEFAULT_IP"
+        log "Tailscale mesh is ENABLED (Headscale: ${HEADSCALE_URL}, hostname: ${TS_HOSTNAME:-render-box})."
     fi
-
-    # Local WebSocket listener for Caddy reverse proxy
-    ET_ARGS+=(-l "ws://127.0.0.1:11010")
-
-    # Render container has no /dev/net/tun or CAP_NET_ADMIN
-    ET_ARGS+=(--no-tun)
-    ET_ARGS+=(--use-smoltcp)
-    ET_ARGS+=(--tcp-whitelist 22 2222 10808)
-
-    # Hostname
-    ET_ARGS+=(--hostname "${ET_HOSTNAME:-render-box}")
-
-    # Peer connections
-    if [ -n "${ET_PEERS:-}" ]; then
-        IFS=', ' read -r -a PEER_ARRAY <<< "$ET_PEERS"
-        for peer in "${PEER_ARRAY[@]}"; do
-            if [ -n "$peer" ]; then
-                ET_ARGS+=(-p "$peer")
-                log "Configured EasyTier peer: $peer"
-            fi
-        done
-    else
-        log "No external ET_PEERS defined. Container will wait passively on ws://127.0.0.1:11010"
-    fi
-
-    ET_ARGS+=(--console-log-level "${ET_LOG_LEVEL:-info}")
 else
-    log "EasyTier mesh network is DISABLED (activate by defining ET_NAME or setting ENABLE_EASYTIER=true)."
+    log "Tailscale mesh is DISABLED (set ENABLE_TAILSCALE=true and provide HEADSCALE_URL + TS_AUTHKEY)."
 fi
 
 # Feature 2: sing-box Proxy
@@ -198,38 +164,29 @@ else
     log "sing-box proxy is DISABLED (activate by defining SINGBOX_UUID or setting ENABLE_SINGBOX=true)."
 fi
 
-# Feature 3: Komari Monitoring Telemetry Agent
-# Requires both token and an explicit endpoint to prevent accidental telemetry leakage
-ENABLE_KOMARI="false"
-if [ -n "${KOMARI_TOKEN:-}" ] || [ -n "${AGENT_TOKEN:-}" ] || [ "${ENABLE_KOMARI:-}" = "true" ]; then
-    RESOLVED_TOKEN="${KOMARI_TOKEN:-${AGENT_TOKEN:-}}"
-    if [ -z "$RESOLVED_TOKEN" ]; then
-        warn "ENABLE_KOMARI requested but neither KOMARI_TOKEN nor AGENT_TOKEN is provided; skipping."
-    elif [ -z "${KOMARI_ENDPOINT:-}" ]; then
-        warn "KOMARI_TOKEN provided but KOMARI_ENDPOINT is missing; skipping to prevent unauthorized telemetry routing."
+# Feature 3: Nezha v1 Monitoring Agent (official nezhahq/agent)
+# The agent binary reads NZ_* environment variables itself, so the
+# entrypoint only validates the two required ones and pins sane
+# defaults. NZ_UUID should be a fixed value (Render generateValue in
+# render.yaml) so redeploys reuse the same dashboard node instead
+# of registering a duplicate on every restart (Render disks are
+# ephemeral, so an auto-generated UUID would not survive).
+ENABLE_NEZHA="false"
+if [ -n "${NZ_SERVER:-}" ] || [ -n "${NZ_CLIENT_SECRET:-}" ] || [ "${ENABLE_NEZHA:-}" = "true" ]; then
+    if [ -z "${NZ_SERVER:-}" ] || [ -z "${NZ_CLIENT_SECRET:-}" ]; then
+        warn "Nezha requested but NZ_SERVER or NZ_CLIENT_SECRET is missing; skipping to prevent unauthorized telemetry routing."
     else
-        ENABLE_KOMARI="true"
-        log "Komari monitoring agent is ENABLED (Endpoint: ${KOMARI_ENDPOINT})."
-        DEFAULT_KOMARI_FORCE_DISK_TOTAL="5368709120"
-        FORCE_DISK_TOTAL="${KOMARI_FORCE_DISK_TOTAL:-${AGENT_FORCE_DISK_TOTAL:-$DEFAULT_KOMARI_FORCE_DISK_TOTAL}}"
-        cat > /etc/komari-agent.env << EOF
-export AGENT_ENDPOINT="${KOMARI_ENDPOINT}"
-export AGENT_TOKEN="${RESOLVED_TOKEN}"
-export AGENT_INCLUDE_MOUNTPOINTS="/"
-export AGENT_FORCE_DISK_TOTAL="${FORCE_DISK_TOTAL}"
-export AGENT_INCLUDE_NICS="eth0"
-export AGENT_DISABLE_WEB_SSH="true"
-export AGENT_DISABLE_AUTO_UPDATE="true"
-export AGENT_MONTH_ROTATE="1"
-export AGENT_INTERVAL="3"
-export AGENT_PREFER_IP_VERSION="4"
-EOF
-        chmod 600 /etc/komari-agent.env
+        ENABLE_NEZHA="true"
+        export NZ_DISABLE_AUTO_UPDATE="${NZ_DISABLE_AUTO_UPDATE:-true}"
+        export NZ_SKIP_CONNECTION_COUNT="${NZ_SKIP_CONNECTION_COUNT:-true}"
+        export NZ_SKIP_PROCS_COUNT="${NZ_SKIP_PROCS_COUNT:-true}"
+        export NZ_REPORT_DELAY="${NZ_REPORT_DELAY:-3}"
+        log "Nezha agent is ENABLED (Server: ${NZ_SERVER}, TLS: ${NZ_TLS:-false})."
     fi
 fi
 
-if [ "$ENABLE_KOMARI" = "false" ]; then
-    log "Komari monitoring agent is DISABLED (activate by providing both KOMARI_TOKEN and KOMARI_ENDPOINT)."
+if [ "$ENABLE_NEZHA" = "false" ]; then
+    log "Nezha agent is DISABLED (provide both NZ_SERVER and NZ_CLIENT_SECRET to activate)."
 fi
 
 # Feature 4: Autonomous Inbound Keepalive Watchdog
@@ -256,10 +213,10 @@ fi
 # 3. Process Management & Background Services
 # ------------------------------------------------------------------------------
 PID_SSHD=""
-PID_ET=""
+PID_TAILSCALED=""
 PID_TTYD=""
 PID_CADDY=""
-PID_KOMARI=""
+PID_NEZHA=""
 PID_SINGBOX=""
 PID_KEEPALIVE=""
 
@@ -272,7 +229,7 @@ cleanup() {
     fi
 
     # 2. Terminate all active managed service daemons (including child process groups)
-    local active_pids=("${PID_CADDY:-}" "${PID_ET:-}" "${PID_SSHD:-}" "${PID_TTYD:-}" "${PID_KOMARI:-}" "${PID_SINGBOX:-}" "${PID_KEEPALIVE:-}")
+    local active_pids=("${PID_CADDY:-}" "${PID_TAILSCALED:-}" "${PID_SSHD:-}" "${PID_TTYD:-}" "${PID_NEZHA:-}" "${PID_SINGBOX:-}" "${PID_KEEPALIVE:-}")
     for pid in "${active_pids[@]}"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
@@ -338,11 +295,48 @@ log "Starting Caddy multiplexer on port $PORT..."
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 PID_CADDY=$!
 
-# Start EasyTier (Optional Extension)
-if [ "$ENABLE_EASYTIER" = "true" ] && [ -x /usr/local/bin/easytier-core ]; then
-    log "Starting easytier-core..."
-    /usr/local/bin/easytier-core "${ET_ARGS[@]}" &
-    PID_ET=$!
+# Start Tailscale (Optional Extension)
+# tailscaled in userspace mode, then `tailscale up` against Headscale.
+# --accept-dns=false keeps Render's own DNS working. `tailscale serve`
+# forwards tailnet :22 to the local sshd so the box is reachable as
+# ssh root@<tailnet-ip> from any other tailnet node; a serve failure
+# must not kill the container, so it is best-effort only.
+start_tailscale() {
+    mkdir -p /var/lib/tailscale /var/run/tailscale
+    /usr/local/bin/tailscaled \
+        --tun=userspace-networking \
+        --socks5-server=127.0.0.1:1055 \
+        --state=/var/lib/tailscale/tailscaled.state \
+        --socket=/var/run/tailscale/tailscaled.sock \
+        --port=41641 &
+    PID_TAILSCALED=$!
+    # Wait for the daemon socket, then log in (retry once: the daemon
+    # can take a few seconds to become responsive on a cold container).
+    local i=0
+    while [ $i -lt 30 ]; do
+        if /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    local up_args=(--login-server "${HEADSCALE_URL}" --authkey "${TS_AUTHKEY}" --hostname "${TS_HOSTNAME:-render-box}" --accept-dns=false)
+    if [ "${TS_EPHEMERAL:-false}" = "true" ]; then
+        up_args+=(--ephemeral)
+    fi
+    if /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock up "${up_args[@]}"; then
+        log "Tailscale up OK. Tailnet IP: $(/usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock ip -4 2>/dev/null || echo unknown)"
+        /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock serve --bg tcp:22 tcp://127.0.0.1:22 >/dev/null 2>&1 \
+            && log "Tailscale serve: tailnet :22 -> local sshd" \
+            || warn "tailscale serve tcp:22 failed; Web terminal (/shell) still works, tailnet SSH may not."
+    else
+        warn "tailscale up failed; check HEADSCALE_URL and TS_AUTHKEY (preauth key must be reusable)."
+    fi
+}
+
+if [ "$ENABLE_TAILSCALE" = "true" ] && [ -x /usr/local/bin/tailscaled ]; then
+    log "Starting tailscaled (userspace networking)..."
+    start_tailscale
 fi
 
 # Start sing-box (Optional Extension, log streaming)
@@ -352,16 +346,11 @@ if [ "$ENABLE_SINGBOX" = "true" ] && command -v sing-box >/dev/null 2>&1; then
     PID_SINGBOX=$!
 fi
 
-# Start Komari Agent (Optional Extension, log streaming)
-if [ "$ENABLE_KOMARI" = "true" ] && [ -x /usr/local/bin/komari-agent ] && [ -f /etc/komari-agent.env ]; then
-    log "Starting komari-agent..."
-    (
-        set -a
-        . /etc/komari-agent.env
-        set +a
-        exec /usr/local/bin/komari-agent --prefer-cgroup-limits
-    ) &
-    PID_KOMARI=$!
+# Start Nezha Agent (Optional Extension, log streaming)
+if [ "$ENABLE_NEZHA" = "true" ] && [ -x /usr/local/bin/nezha-agent ]; then
+    log "Starting nezha-agent..."
+    /usr/local/bin/nezha-agent &
+    PID_NEZHA=$!
 fi
 
 # Start Autonomous Keepalive Watchdog (Core Resilience Feature)
@@ -396,20 +385,20 @@ if [ "$ENABLE_KEEPALIVE" = "true" ] && [ -n "${KEEPALIVE_URL:-}" ]; then
 else
     log "Auto Keepalive : DISABLED (Set ENABLE_KEEPALIVE=true or configure KEEPALIVE_URL)"
 fi
-if [ "$ENABLE_EASYTIER" = "true" ]; then
-    log "EasyTier Mesh  : ENABLED (Network: ${ET_NAME}, Hostname: ${ET_HOSTNAME:-render-box})"
+if [ "$ENABLE_TAILSCALE" = "true" ]; then
+    log "Tailscale Mesh : ENABLED (Headscale: ${HEADSCALE_URL}, Hostname: ${TS_HOSTNAME:-render-box})"
 else
-    log "EasyTier Mesh  : DISABLED (set ENABLE_EASYTIER=true or ET_NAME to activate)"
+    log "Tailscale Mesh : DISABLED (set ENABLE_TAILSCALE=true, HEADSCALE_URL and TS_AUTHKEY to activate)"
 fi
 if [ "$ENABLE_SINGBOX" = "true" ]; then
     log "sing-box Proxy : ENABLED (vless-ws: /vless-ws, mixed: 10808)"
 else
     log "sing-box Proxy : DISABLED (set ENABLE_SINGBOX=true or SINGBOX_UUID to activate)"
 fi
-if [ "$ENABLE_KOMARI" = "true" ]; then
-    log "Komari Agent   : ENABLED (Reporting to ${KOMARI_ENDPOINT})"
+if [ "$ENABLE_NEZHA" = "true" ]; then
+    log "Nezha Agent    : ENABLED (Reporting to ${NZ_SERVER})"
 else
-    log "Komari Agent   : DISABLED (set KOMARI_TOKEN and KOMARI_ENDPOINT to activate)"
+    log "Nezha Agent    : DISABLED (set NZ_SERVER and NZ_CLIENT_SECRET to activate)"
 fi
 log "=========================================================="
 
@@ -417,11 +406,11 @@ log "=========================================================="
 # 4. Supervise Processes Loop with Crash-Loop Circuit Breaker and Success-Reset
 # ------------------------------------------------------------------------------
 FAIL_COUNT_CADDY=0
-FAIL_COUNT_ET=0
+FAIL_COUNT_TAILSCALED=0
 FAIL_COUNT_SSHD=0
 FAIL_COUNT_TTYD=0
 FAIL_COUNT_SINGBOX=0
-FAIL_COUNT_KOMARI=0
+FAIL_COUNT_NEZHA=0
 FAIL_COUNT_KEEPALIVE=0
 MAX_FAILURES=5
 
@@ -468,19 +457,20 @@ while true; do
         PID_TTYD=$!
     fi
 
-    # Check EasyTier (Only if enabled)
-    if [ "$ENABLE_EASYTIER" = "true" ] && [ -n "$PID_ET" ]; then
-        if kill -0 "$PID_ET" 2>/dev/null; then
-            FAIL_COUNT_ET=0
+    # Check tailscaled (Only if enabled; `tailscale up` state is kept
+    # in the daemon, so a daemon restart re-runs the login helper)
+    if [ "$ENABLE_TAILSCALE" = "true" ] && [ -n "$PID_TAILSCALED" ]; then
+        if kill -0 "$PID_TAILSCALED" 2>/dev/null; then
+            FAIL_COUNT_TAILSCALED=0
         else
-            ((FAIL_COUNT_ET++)) || true
-            err "EasyTier core process died! (Failure count: $FAIL_COUNT_ET/$MAX_FAILURES)"
-            if [ "$FAIL_COUNT_ET" -ge "$MAX_FAILURES" ]; then
-                err "EasyTier core exceeded maximum consecutive crash limit ($MAX_FAILURES). Aborting container."
-                exit 1
+            ((FAIL_COUNT_TAILSCALED++)) || true
+            warn "tailscaled process died! (Failure count: $FAIL_COUNT_TAILSCALED/$MAX_FAILURES)"
+            if [ "$FAIL_COUNT_TAILSCALED" -ge "$MAX_FAILURES" ]; then
+                err "tailscaled exceeded maximum consecutive restart limit ($MAX_FAILURES). Stopping auto-restart."
+                PID_TAILSCALED=""
+            else
+                start_tailscale
             fi
-            /usr/local/bin/easytier-core "${ET_ARGS[@]}" &
-            PID_ET=$!
         fi
     fi
 
@@ -501,24 +491,19 @@ while true; do
         fi
     fi
 
-    # Check Komari Agent (Only if enabled, with circuit breaker)
-    if [ "$ENABLE_KOMARI" = "true" ] && [ -n "$PID_KOMARI" ]; then
-        if kill -0 "$PID_KOMARI" 2>/dev/null; then
-            FAIL_COUNT_KOMARI=0
+    # Check Nezha Agent (Only if enabled, with circuit breaker)
+    if [ "$ENABLE_NEZHA" = "true" ] && [ -n "$PID_NEZHA" ]; then
+        if kill -0 "$PID_NEZHA" 2>/dev/null; then
+            FAIL_COUNT_NEZHA=0
         else
-            ((FAIL_COUNT_KOMARI++)) || true
-            warn "komari-agent process died! (Failure count: $FAIL_COUNT_KOMARI/$MAX_FAILURES)"
-            if [ "$FAIL_COUNT_KOMARI" -ge "$MAX_FAILURES" ]; then
-                err "komari-agent exceeded maximum consecutive restart limit ($MAX_FAILURES). Stopping auto-restart."
-                PID_KOMARI=""
+            ((FAIL_COUNT_NEZHA++)) || true
+            warn "nezha-agent process died! (Failure count: $FAIL_COUNT_NEZHA/$MAX_FAILURES)"
+            if [ "$FAIL_COUNT_NEZHA" -ge "$MAX_FAILURES" ]; then
+                err "nezha-agent exceeded maximum consecutive restart limit ($MAX_FAILURES). Stopping auto-restart."
+                PID_NEZHA=""
             else
-                (
-                    set -a
-                    . /etc/komari-agent.env
-                    set +a
-                    exec /usr/local/bin/komari-agent --prefer-cgroup-limits
-                ) &
-                PID_KOMARI=$!
+                /usr/local/bin/nezha-agent &
+                PID_NEZHA=$!
             fi
         fi
     fi

@@ -18,15 +18,7 @@
         }
     }
 
-    # 3. EasyTier WebSocket routing (Optional mesh tunnel)
-    handle /et* {
-        reverse_proxy 127.0.0.1:11010 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-        }
-    }
-
-    # 4. sing-box VLESS WebSocket Ingress (Optional proxy)
+    # 3. sing-box VLESS WebSocket Ingress (Optional proxy)
     handle /vless-ws* {
         reverse_proxy 127.0.0.1:20808 {
             header_up Host {host}

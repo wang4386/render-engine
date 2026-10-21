@@ -3,7 +3,7 @@ services:
     name: render-engine
     env: docker
     plan: free
-    region: oregon # or singapore / frankfurt
+    region: singapore # or oregon / frankfurt; Singapore is closest to the user
     dockerfilePath: Dockerfile
     healthCheckPath: /health
     autoDeploy: true
@@ -18,22 +18,34 @@ services:
         generateValue: true
       - key: SSH_PUBKEY
         value: "" # Optional: Paste your ~/.ssh/id_ed25519.pub content here
-      - key: ENABLE_EASYTIER
-        value: "" # Optional: Set to true or define ET_NAME to enable EasyTier
-      - key: ET_NAME
-        value: "" # Optional: e.g. "my-mesh"
-      - key: ET_SECRET
-        generateValue: true # Set manually if joining an existing mesh; leave generateValue for new isolated mesh
-      - key: ET_PEERS
-        value: "" # Optional: e.g. "tcp://your-vps.com:11010"
+      # --- Headscale / Tailscale (replaces upstream EasyTier) ---
+      - key: ENABLE_TAILSCALE
+        value: "" # Set to "true" to join your Headscale tailnet
+      - key: HEADSCALE_URL
+        value: "" # e.g. "https://headscale.example.com" (your self-hosted control plane)
+      - key: TS_AUTHKEY
+        value: "" # REQUIRED for Headscale: a reusable preauth key from `headscale preauthkeys create`
+      - key: TS_HOSTNAME
+        value: render-box
+      - key: TS_EPHEMERAL
+        value: "false" # "true" removes the node from Headscale when the container stops
+      # --- sing-box (unchanged from upstream, optional) ---
       - key: ENABLE_SINGBOX
         value: "" # Optional: Set to true or define SINGBOX_UUID to enable sing-box
       - key: SINGBOX_UUID
         value: "" # Optional: UUID for sing-box VLESS inbound
-      - key: KOMARI_TOKEN
-        value: "" # Optional: Node token for MangoHub telemetry
-      - key: KOMARI_ENDPOINT
-        value: "" # Optional: e.g. "https://your-dashboard.com"
+      # --- Nezha v1 agent (replaces upstream Komari) ---
+      - key: NZ_SERVER
+        value: "" # REQUIRED for Nezha: dashboard gRPC address, e.g. "nz.example.com:5555"
+      - key: NZ_CLIENT_SECRET
+        value: "" # REQUIRED for Nezha: client secret from the dashboard (add server -> install)
+      - key: NZ_UUID
+        generateValue: true # Fixed per-service UUID so redeploys reuse the same Nezha node instead of creating duplicates
+      - key: NZ_TLS
+        value: "false" # Set to "true" only if the Nezha gRPC endpoint is TLS-terminated
+      - key: NZ_INSECURE_TLS
+        value: "true" # Skip cert verification when NZ_TLS is on (common for self-hosted panels)
+      # --- Keepalive (unchanged) ---
       - key: ENABLE_KEEPALIVE
         value: "true" # Keepalive daemon prevents Render 15-min inactivity hibernation
       - key: KEEPALIVE_INTERVAL

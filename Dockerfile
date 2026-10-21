@@ -1,23 +1,25 @@
 # ==========================================
 # Build / Base Stage: Alpine Linux (x86_64)
 # Minimal footprint, low memory (< 512MB limit)
+#
+# Fork note (wang4386): upstream render-engine shipped EasyTier
+# (mesh) + Komari/MangoHub (telemetry). This fork removes both and
+# replaces them with:
+#   - Tailscale client, pointed at a self-hosted Headscale control
+#     plane (userspace networking, because Render containers have
+#     no /dev/net/tun and no CAP_NET_ADMIN)
+#   - Official Nezha v1 agent (nezhahq/agent v1.15.0, last v1 line),
+#     reporting to the user's own Nezha dashboard
 # ==========================================
-FROM golang:alpine AS agent-builder
-
-WORKDIR /src
-RUN apk add --no-cache git ca-certificates && \
-    git clone --depth 1 https://github.com/dengyie/mangohub.git /src && \
-    cd /src/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/komari-agent .
-
 FROM alpine:3.20
 
 LABEL maintainer="DevOps Team" \
-      description="Modular Web-Box with persistent web terminal, SSH and on-demand extensions on Render Free Tier"
+      description="Modular Web-Box with persistent web terminal, SSH, Headscale/Tailscale mesh and Nezha telemetry on Render Free Tier"
 
 # Explicit upstream release versions for reproducible builds
-ARG EASYTIER_VERSION="v2.6.4"
+ARG TAILSCALE_VERSION="1.80.0"
 ARG TTYD_VERSION="1.7.7"
+ARG NEZHA_VERSION="v1.15.0"
 
 # Set environment
 ENV LANG=C.UTF-8 \
@@ -43,17 +45,18 @@ RUN apk update && \
       procps && \
     rm -rf /var/cache/apk/*
 
-# Download and install EasyTier (x86_64) with deterministic version URL
+# Download and install Tailscale (x86_64 static binaries).
+# tailscaled runs with --tun=userspace-networking (see entrypoint.sh):
+# no kernel TUN device is required on Render.
 RUN set -eux; \
-    echo "Downloading EasyTier ${EASYTIER_VERSION}..."; \
-    ET_URL="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"; \
-    curl -sSL "$ET_URL" -o /tmp/easytier.zip; \
-    unzip -q /tmp/easytier.zip -d /tmp/easytier; \
-    find /tmp/easytier -type f -name "easytier-core" -exec cp {} /usr/local/bin/ \; ; \
-    find /tmp/easytier -type f -name "easytier-cli" -exec cp {} /usr/local/bin/ \; 2>/dev/null || true; \
-    chmod +x /usr/local/bin/easytier-core; \
-    [ -f /usr/local/bin/easytier-cli ] && chmod +x /usr/local/bin/easytier-cli || true; \
-    rm -rf /tmp/easytier*
+    echo "Downloading Tailscale ${TAILSCALE_VERSION}..."; \
+    TS_TGZ="tailscale_${TAILSCALE_VERSION#v}_amd64.tgz"; \
+    curl -sSL "https://pkgs.tailscale.com/stable/${TS_TGZ}" -o /tmp/tailscale.tgz; \
+    tar -xzf /tmp/tailscale.tgz -C /tmp; \
+    cp /tmp/tailscale_*/tailscaled /usr/local/bin/tailscaled; \
+    cp /tmp/tailscale_*/tailscale /usr/local/bin/tailscale; \
+    chmod +x /usr/local/bin/tailscaled /usr/local/bin/tailscale; \
+    rm -rf /tmp/tailscale*
 
 # Download and install ttyd for emergency web terminal
 RUN set -eux; \
@@ -61,9 +64,15 @@ RUN set -eux; \
     curl -sSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"; \
     chmod +x /usr/local/bin/ttyd
 
-# Copy compiled Komari telemetry agent
-COPY --from=agent-builder /usr/local/bin/komari-agent /usr/local/bin/komari-agent
-RUN chmod +x /usr/local/bin/komari-agent
+# Download and install official Nezha v1 agent (last v1 release line).
+# The agent reads its own NZ_* environment variables at runtime.
+RUN set -eux; \
+    echo "Downloading Nezha agent ${NEZHA_VERSION}..."; \
+    curl -sSL "https://github.com/nezhahq/agent/releases/download/${NEZHA_VERSION}/nezha-agent_linux_amd64.zip" -o /tmp/nezha.zip; \
+    unzip -q /tmp/nezha.zip -d /tmp/nezha; \
+    cp /tmp/nezha/nezha-agent /usr/local/bin/nezha-agent; \
+    chmod +x /usr/local/bin/nezha-agent; \
+    rm -rf /tmp/nezha*
 
 # Configure SSH server defaults
 RUN mkdir -p /var/run/sshd /root/.ssh && \
