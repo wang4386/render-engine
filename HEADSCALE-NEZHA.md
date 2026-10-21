@@ -72,7 +72,7 @@ OverlayFS 的数值（上游 Komari 版用 `KOMARI_FORCE_DISK_TOTAL`
 ## 4. Render 部署
 
 优先用 Blueprint（`render.yaml` 已含全部变量，`plan: free`，
-`region: singapore`，健康检查 `/health`）：
+`region: oregon`（上游默认），健康检查 `/health`）：
 
 ```
 https://render.com/deploy?repo=https://github.com/wang4386/render-engine
