@@ -8,7 +8,7 @@
 #   - Tailscale client, pointed at a self-hosted Headscale control
 #     plane (userspace networking, because Render containers have
 #     no /dev/net/tun and no CAP_NET_ADMIN)
-#   - Official Nezha v1 agent (nezhahq/agent v1.15.0, last v1 line),
+#   - Official Nezha agent, v2 line (nezhahq/agent v2.3.5), matching a 2.x dashboard,
 #     reporting to the user's own Nezha dashboard
 # ==========================================
 FROM alpine:3.20
@@ -19,7 +19,7 @@ LABEL maintainer="DevOps Team" \
 # Explicit upstream release versions for reproducible builds
 ARG TAILSCALE_VERSION="1.80.0"
 ARG TTYD_VERSION="1.7.7"
-ARG NEZHA_VERSION="v1.15.0"
+ARG NEZHA_VERSION="v2.3.5"
 
 # Set environment
 ENV LANG=C.UTF-8 \
@@ -64,7 +64,7 @@ RUN set -eux; \
     curl -sSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"; \
     chmod +x /usr/local/bin/ttyd
 
-# Download and install official Nezha v1 agent (last v1 release line).
+# Download and install official Nezha agent (v2 line).
 # The agent reads its own NZ_* environment variables at runtime.
 RUN set -eux; \
     echo "Downloading Nezha agent ${NEZHA_VERSION}..."; \

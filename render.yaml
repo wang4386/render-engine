@@ -34,7 +34,7 @@ services:
         value: "" # Optional: Set to true or define SINGBOX_UUID to enable sing-box
       - key: SINGBOX_UUID
         value: "" # Optional: UUID for sing-box VLESS inbound
-      # --- Nezha v1 agent (replaces upstream Komari) ---
+      # --- Nezha agent, v2 line (replaces upstream Komari) ---
       - key: NZ_SERVER
         value: "" # REQUIRED for Nezha: dashboard gRPC address, e.g. "nz.example.com:5555"
       - key: NZ_CLIENT_SECRET

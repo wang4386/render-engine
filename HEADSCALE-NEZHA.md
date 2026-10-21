@@ -6,7 +6,7 @@ Web 终端 + tmux、OpenSSH、Caddy、sing-box、保活）与上游一致：
 | 上游 | 本 fork |
 | --- | --- |
 | EasyTier 虚拟网格 | Tailscale 客户端，接自部署 Headscale |
-| Komari / MangoHub 探针 | 官方哪吒 v1 agent（nezhahq/agent v1.15.0，v1 最后一个大版本线） |
+| Komari / MangoHub 探针 | 官方哪吒 agent v2 线（nezhahq/agent v2.3.5），对应 2.x 面板 |
 
 ## 1. 为什么 Tailscale 要用用户态模式
 
@@ -48,7 +48,7 @@ URL 是否能从公网访问。
 
 ## 3. 哪吒侧准备
 
-在你的哪吒面板（v1）里添加一台服务器，拿到安装命令里的两个值：
+在你的哪吒面板里添加一台服务器，拿到安装命令里的两个值：
 
 | 变量 | 说明 |
 | --- | --- |
@@ -83,6 +83,7 @@ https://render.com/deploy?repo=https://github.com/wang4386/render-engine
 `render-engine is ready!`。随后分别在 Headscale 节点列表和哪吒
 面板里确认这台机器上线。
 
-若你的哪吒面板已升级到 v2，v1 agent 连不上，需要把 Dockerfile
-里的 `NEZHA_VERSION` 换成 v2 发布并改用 v2 配置，部署前先确认
-面板版本。
+版本说明：面板版本以用户 2026-10-20 确认的 2.3.18 为准，故 agent
+用 v2 线；面板公开页页脚的「ZOOL 主题 v1.0.0」是主题版本，不是
+哪吒版本，不要拿它判断 agent 版本。若面板实际是 v1，才需要把
+Dockerfile 里的 `NEZHA_VERSION` 换回 v1.15.0。

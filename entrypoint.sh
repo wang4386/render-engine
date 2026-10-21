@@ -164,7 +164,7 @@ else
     log "sing-box proxy is DISABLED (activate by defining SINGBOX_UUID or setting ENABLE_SINGBOX=true)."
 fi
 
-# Feature 3: Nezha v1 Monitoring Agent (official nezhahq/agent)
+# Feature 3: Nezha Monitoring Agent (official nezhahq/agent, v2 line)
 # The agent binary reads NZ_* environment variables itself, so the
 # entrypoint only validates the two required ones and pins sane
 # defaults. NZ_UUID should be a fixed value (Render generateValue in
